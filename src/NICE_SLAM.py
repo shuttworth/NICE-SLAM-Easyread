@@ -24,17 +24,20 @@ class NICE_SLAM():
     """
 
     def __init__(self, cfg, args):
-
+        # 初始化配置和参数
         self.cfg = cfg
         self.args = args
         self.nice = args.nice
 
+        # 从配置中读取各种设置
         self.coarse = cfg['coarse']
         self.occupancy = cfg['occupancy']
         self.low_gpu_mem = cfg['low_gpu_mem']
         self.verbose = cfg['verbose']
         self.dataset = cfg['dataset']
         self.coarse_bound_enlarge = cfg['model']['coarse_bound_enlarge']
+
+        # 设置输出目录
         if args.output is None:
             self.output = cfg['data']['output']
         else:
@@ -43,13 +46,17 @@ class NICE_SLAM():
         os.makedirs(self.output, exist_ok=True)
         os.makedirs(self.ckptsdir, exist_ok=True)
         os.makedirs(f'{self.output}/mesh', exist_ok=True)
+
+        # 读取相机配置
         self.H, self.W, self.fx, self.fy, self.cx, self.cy = cfg['cam']['H'], cfg['cam'][
             'W'], cfg['cam']['fx'], cfg['cam']['fy'], cfg['cam']['cx'], cfg['cam']['cy']
         self.update_cam()
 
+        # 初始化模型
         model = config.get_model(cfg,  nice=self.nice)
         self.shared_decoders = model
 
+        # 加载其他配置
         self.scale = cfg['scale']
 
         self.load_bound(cfg)
@@ -60,18 +67,25 @@ class NICE_SLAM():
             self.shared_c = {}
 
         # need to use spawn
+        # 设置多进程启动方法
         try:
             mp.set_start_method('spawn', force=True)
         except RuntimeError:
             pass
 
+        # 初始化帧读取器
         self.frame_reader = get_dataset(cfg, args, self.scale)
         self.n_img = len(self.frame_reader)
+
+        # 初始化真实的相机位姿列表
         self.estimate_c2w_list = torch.zeros((self.n_img, 4, 4))
         self.estimate_c2w_list.share_memory_()
 
+        # 初始化真实的相机位姿列表
         self.gt_c2w_list = torch.zeros((self.n_img, 4, 4))
         self.gt_c2w_list.share_memory_()
+
+        # 初始化其他共享内存变量
         self.idx = torch.zeros((1)).int()
         self.idx.share_memory_()
         self.mapping_first_frame = torch.zeros((1)).int()
@@ -81,10 +95,14 @@ class NICE_SLAM():
         self.mapping_idx.share_memory_()
         self.mapping_cnt = torch.zeros((1)).int()  # counter for mapping
         self.mapping_cnt.share_memory_()
+
+        # 将共享变量移至指定设备并共享内存
         for key, val in self.shared_c.items():
             val = val.to(self.cfg['mapping']['device'])
             val.share_memory_()
             self.shared_c[key] = val
+        
+        # 初始化渲染器、网格生成器、日志记录器
         self.shared_decoders = self.shared_decoders.to(
             self.cfg['mapping']['device'])
         self.shared_decoders.share_memory()
@@ -92,12 +110,17 @@ class NICE_SLAM():
         self.mesher = Mesher(cfg, args, self)
         self.logger = Logger(cfg, args, self)
         self.mapper = Mapper(cfg, args, self, coarse_mapper=False)
+
+        # 初始化映射器和追踪器
         if self.coarse:
             self.coarse_mapper = Mapper(cfg, args, self, coarse_mapper=True)
         self.tracker = Tracker(cfg, args, self)
+
+        # 打印输出描述
         self.print_output_desc()
 
     def print_output_desc(self):
+        # 打印输出信息，在上方的__init__里调用
         print(f"INFO: The output folder is {self.output}")
         if 'Demo' in self.output:
             print(
@@ -110,12 +133,15 @@ class NICE_SLAM():
         print(f"INFO: The mesh can be found under {self.output}/mesh/")
         print(f"INFO: The checkpoint can be found under {self.output}/ckpt/")
 
+    # 根据预处理配置更新相机的内参，这可能包括调整图像大小或裁剪边缘，在__init__里调用
     def update_cam(self):
         """
         Update the camera intrinsics according to pre-processing config, 
         such as resize or edge crop.
         """
-        # resize the input images to crop_size (variable name used in lietorch)
+        # resize the input images to crop_size (variable name used in lietorch) 
+        # 检查配置中是否有 crop_size 参数。如果有，它将调整相机的焦距和主点坐标以适应新的图像尺寸
+        # sx 和 sy 是宽度和高度的缩放比例，分别用于调整焦距（fx, fy）和主点坐标（cx, cy）。最后，更新图像的宽度（W）和高度（H）为新的裁剪尺寸
         if 'crop_size' in self.cfg['cam']:
             crop_size = self.cfg['cam']['crop_size']
             sx = crop_size[1] / self.W
@@ -128,12 +154,14 @@ class NICE_SLAM():
             self.H = crop_size[0]
 
         # croping will change H, W, cx, cy, so need to change here
+        # 检查配置中是否有 crop_edge 参数，用于裁剪图像边缘，如果 crop_edge 大于0，它将从图像的宽度和高度中减去两倍的 crop_edge 值，并相应地调整主点坐标
         if self.cfg['cam']['crop_edge'] > 0:
             self.H -= self.cfg['cam']['crop_edge']*2
             self.W -= self.cfg['cam']['crop_edge']*2
             self.cx -= self.cfg['cam']['crop_edge']
             self.cy -= self.cfg['cam']['crop_edge']
 
+    # 加载和设置场景的边界参数，在__init__里调用
     def load_bound(self, cfg):
         """
         Pass the scene bound parameters to different decoders and self.
@@ -142,6 +170,7 @@ class NICE_SLAM():
             cfg (dict): parsed config dict.
         """
         # scale the bound if there is a global scaling factor
+        # 从配置中读取边界参数，并将其转换为一个PyTorch张量。边界参数被乘以一个全局缩放因子 self.scale，这可能用于调整场景的大小
         self.bound = torch.from_numpy(
             np.array(cfg['mapping']['bound'])*self.scale)
         bound_divisible = cfg['grid_len']['bound_divisible']
@@ -156,6 +185,7 @@ class NICE_SLAM():
             if self.coarse:
                 self.shared_decoders.coarse_decoder.bound = self.bound*self.coarse_bound_enlarge
 
+    # 加载预先训练的ConvOnet参数
     def load_pretrain(self, cfg):
         """
         Load parameters of pretrained ConvOnet checkpoints to the decoders.
