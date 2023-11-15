@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from src.common import normalize_3d_coordinate
 
 
+# 实现高斯傅里叶特征映射，在class MLP的__init__中被调用
 class GaussianFourierFeatureTransform(torch.nn.Module):
     """
     Modified based on the implementation of Gaussian Fourier feature mapping.
@@ -29,7 +30,7 @@ class GaussianFourierFeatureTransform(torch.nn.Module):
         x = x @ self._B.to(x.device)
         return torch.sin(x)
 
-
+# 原Nerf的位置编码方式，在class MLP的__init__中被调用
 class Nerf_positional_embedding(torch.nn.Module):
     """
     Nerf positional embedding.
@@ -67,7 +68,9 @@ class Nerf_positional_embedding(torch.nn.Module):
         return ret
 
 
+# 实现一个标准的全连接层，带有自定义的权重初始化和激活函数
 class DenseLayer(nn.Linear):
+    # out_dim：输出维度
     def __init__(self, in_dim: int, out_dim: int, activation: str = "relu", *args, **kwargs) -> None:
         self.activation = activation
         super().__init__(in_dim, out_dim, *args, **kwargs)
@@ -79,6 +82,7 @@ class DenseLayer(nn.Linear):
             torch.nn.init.zeros_(self.bias)
 
 
+# 创建一个简单的神经网络模块，其唯一作用是修改输入张量的形状
 class Same(nn.Module):
     def __init__(self):
         super().__init__()
@@ -88,6 +92,8 @@ class Same(nn.Module):
         return x
 
 
+# 多层感知机，解码点坐标，根据输入的点坐标等内容，生成颜色等输出，在class NICE(nn.Module)的__init__中供middle fine color调用
+# ConvONet代码: https://github.com/autonomousvision/convolutional_occupancy_networks/blob/master/src/conv_onet/models/decoder.py
 class MLP(nn.Module):
     """
     Decoder. Point coordinates not only used in sampling the feature grids, but also as MLP input.
@@ -107,6 +113,7 @@ class MLP(nn.Module):
         concat_feature (bool): whether to get feature from middle level and concat to the current feature.
     """
 
+    # 初始化内部层和配置
     def __init__(self, name='', dim=3, c_dim=128,
                  hidden_size=256, n_blocks=5, leaky=False, sample_mode='bilinear',
                  color=False, skips=[2], grid_len=0.16, pos_embedding_method='fourier', concat_feature=False):
@@ -125,6 +132,7 @@ class MLP(nn.Module):
                 nn.Linear(c_dim, hidden_size) for i in range(n_blocks)
             ])
 
+        # 从顶部的几种positional embedding method方法中，选取其一，传参默认是fourier(高斯傅里叶特征映射)
         if pos_embedding_method == 'fourier':
             embedding_size = 93
             self.embedder = GaussianFourierFeatureTransform(
@@ -152,9 +160,11 @@ class MLP(nn.Module):
              else DenseLayer(hidden_size + embedding_size, hidden_size, activation="relu") for i in range(n_blocks-1)])
 
         if self.color:
+            # 如果是color decoder，输出维度为4，对应3维度的RGB颜色值和另一个维度的occupancy值
             self.output_linear = DenseLayer(
                 hidden_size, 4, activation="linear")
         else:
+            # 如果不是color decoder，输出维度为1，对应occupancy值
             self.output_linear = DenseLayer(
                 hidden_size, 1, activation="linear")
 
@@ -165,6 +175,7 @@ class MLP(nn.Module):
 
         self.sample_mode = sample_mode
 
+    # 将点坐标标准化并使用 grid_sample 方法进行采样
     def sample_grid_feature(self, p, c):
         p_nor = normalize_3d_coordinate(p.clone(), self.bound)
         p_nor = p_nor.unsqueeze(0)
@@ -174,11 +185,14 @@ class MLP(nn.Module):
                           mode=self.sample_mode).squeeze(-1).squeeze(-1)
         return c
 
+    # 前向传播，如果有特征维度，从特征网格中采样特征，对点坐标应用位置嵌入，通过一系列全连接层处理嵌入后的点坐标，可选择性地与采样的特征结合，生成最终输出
     def forward(self, p, c_grid=None):
+        # 如果 c_dim 不为零（即存在特征维度），则从特征网格 c_grid 中采样特征
         if self.c_dim != 0:
             c = self.sample_grid_feature(
                 p, c_grid['grid_' + self.name]).transpose(1, 2).squeeze(0)
 
+            # 仅fine层会concat特征
             if self.concat_feature:
                 # only happen to fine decoder, get feature from middle level and concat to the current feature
                 with torch.no_grad():
@@ -192,17 +206,21 @@ class MLP(nn.Module):
         h = embedded_pts
         for i, l in enumerate(self.pts_linears):
             h = self.pts_linears[i](h)
+            # h 的维度在每个 pts_linears 层后保持不变，因为这些层是全连接层，其输出大小由 hidden_size 决定
             h = F.relu(h)
             if self.c_dim != 0:
                 h = h + self.fc_c[i](c)
             if i in self.skips:
                 h = torch.cat([embedded_pts, h], -1)
         out = self.output_linear(h)
+        # out 的维度将是 (N, D)，其中 N 是输入点 p 的数量，D 是 output_linear 层的输出维度（4 或 1）
+        # 如果 color=false，D 会被压缩，使得 out 的维度变为 (N,)
         if not self.color:
             out = out.squeeze(-1)
         return out
 
 
+# 简化版MLP，点坐标仅用于从特征网格中采样特征，不作为 MLP 的输入，也没有positional embedding步骤，在class NICE(nn.Module)的__init__中供coarse调用
 class MLP_no_xyz(nn.Module):
     """
     Decoder. Point coordinates only used in sampling the feature grids, not as MLP input.
@@ -295,16 +313,18 @@ class NICE(nn.Module):
                  color_grid_len=0.16, hidden_size=32, coarse=False, pos_embedding_method='fourier'):
         super().__init__()
 
+        # coarse_decoder和middle_decoder等等decoder与MLP和MLP_no_xyz之间的关系
         if coarse:
             self.coarse_decoder = MLP_no_xyz(
                 name='coarse', dim=dim, c_dim=c_dim, color=False, hidden_size=hidden_size, grid_len=coarse_grid_len)
 
         self.middle_decoder = MLP(name='middle', dim=dim, c_dim=c_dim, color=False,
                                   skips=[2], n_blocks=5, hidden_size=hidden_size,
-                                  grid_len=middle_grid_len, pos_embedding_method=pos_embedding_method)
+                                  grid_len=middle_grid_len, pos_embedding_method=pos_embedding_method) # 默认embedding方法都是fourier
         self.fine_decoder = MLP(name='fine', dim=dim, c_dim=c_dim*2, color=False,
                                 skips=[2], n_blocks=5, hidden_size=hidden_size,
                                 grid_len=fine_grid_len, concat_feature=True, pos_embedding_method=pos_embedding_method)
+        # 与上方decoder在传参上的区别: name='color', color=True, grid_len=color_grid_len
         self.color_decoder = MLP(name='color', dim=dim, c_dim=c_dim, color=True,
                                  skips=[2], n_blocks=5, hidden_size=hidden_size,
                                  grid_len=color_grid_len, pos_embedding_method=pos_embedding_method)
@@ -314,18 +334,24 @@ class NICE(nn.Module):
             Output occupancy/color in different stage.
         """
         device = f'cuda:{p.get_device()}'
+        # 使用粗糙解码器输出占用率
         if stage == 'coarse':
+            # 输入参数是(p,c_grid)，decoder内部调用的是forward，输出一维张量，对应occupancy值
             occ = self.coarse_decoder(p, c_grid)
             occ = occ.squeeze(0)
+            # raw的四个通道初始时都是0
             raw = torch.zeros(occ.shape[0], 4).to(device).float()
+            # raw的最后一个通道值用occ赋值
             raw[..., -1] = occ
             return raw
+        # 使用中等解码器输出占用率
         elif stage == 'middle':
             middle_occ = self.middle_decoder(p, c_grid)
             middle_occ = middle_occ.squeeze(0)
             raw = torch.zeros(middle_occ.shape[0], 4).to(device).float()
             raw[..., -1] = middle_occ
             return raw
+        # 使用精细解码器输出占用率，并将其与中等解码器的输出相加
         elif stage == 'fine':
             fine_occ = self.fine_decoder(p, c_grid)
             raw = torch.zeros(fine_occ.shape[0], 4).to(device).float()
@@ -333,10 +359,16 @@ class NICE(nn.Module):
             middle_occ = middle_occ.squeeze(0)
             raw[..., -1] = fine_occ+middle_occ
             return raw
+        # 使用颜色解码器输出颜色
         elif stage == 'color':
+            # 使用 fine_decoder 获取精细层级的占用率（occupancy）信息: fine_occ
             fine_occ = self.fine_decoder(p, c_grid)
+            # 使用 color_decoder 从相同的输入(p, c_grid)中获取颜色信息: raw
+            # 注意此时raw是四列张量，前三列是RGB颜色，第四列对应occupancy值；
             raw = self.color_decoder(p, c_grid)
+            # 使用 middle_decoder 获取中层级的占用率（occupancy）信息: middle_occ
             middle_occ = self.middle_decoder(p, c_grid)
             middle_occ = middle_occ.squeeze(0)
+            # raw的RGB颜色值不变，第四列的occupancy值=fine_occ+middle_occ
             raw[..., -1] = fine_occ+middle_occ
             return raw

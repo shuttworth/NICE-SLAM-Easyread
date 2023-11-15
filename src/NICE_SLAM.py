@@ -77,7 +77,7 @@ class NICE_SLAM():
         self.frame_reader = get_dataset(cfg, args, self.scale)
         self.n_img = len(self.frame_reader)
 
-        # 初始化真实的相机位姿列表
+        # 初始化估计的相机位姿列表
         self.estimate_c2w_list = torch.zeros((self.n_img, 4, 4))
         self.estimate_c2w_list.share_memory_()
 
@@ -154,7 +154,7 @@ class NICE_SLAM():
             self.H = crop_size[0]
 
         # croping will change H, W, cx, cy, so need to change here
-        # 检查配置中是否有 crop_edge 参数，用于裁剪图像边缘，如果 crop_edge 大于0，它将从图像的宽度和高度中减去两倍的 crop_edge 值，并相应地调整主点坐标
+        # 检查配置中是否有 crop_edge 参数，用于裁剪图像边缘，如果 crop_edge 大于0(nice_slam.yaml里的crop_edge值是0)，它将从图像的宽度和高度中减去两倍的 crop_edge 值，并相应地调整主点坐标
         if self.cfg['cam']['crop_edge'] > 0:
             self.H -= self.cfg['cam']['crop_edge']*2
             self.W -= self.cfg['cam']['crop_edge']*2
@@ -170,22 +170,26 @@ class NICE_SLAM():
             cfg (dict): parsed config dict.
         """
         # scale the bound if there is a global scaling factor
-        # 从配置中读取边界参数，并将其转换为一个PyTorch张量。边界参数被乘以一个全局缩放因子 self.scale，这可能用于调整场景的大小
+        # 从配置中读取边界参数，并将其转换为一个PyTorch张量。边界参数被乘以一个全局缩放因子 self.scale(nice_slam.yaml里的scale值是1)，用于调整场景的大小
         self.bound = torch.from_numpy(
             np.array(cfg['mapping']['bound'])*self.scale)
         bound_divisible = cfg['grid_len']['bound_divisible']
         # enlarge the bound a bit to allow it divisible by bound_divisible
+        # 调整边界的上限，使其可以被 bound_divisible 整除
         self.bound[:, 1] = (((self.bound[:, 1]-self.bound[:, 0]) /
                             bound_divisible).int()+1)*bound_divisible+self.bound[:, 0]
+        # 如果执行的是nice-slam的算法
         if self.nice:
             self.shared_decoders.bound = self.bound
             self.shared_decoders.middle_decoder.bound = self.bound
             self.shared_decoders.fine_decoder.bound = self.bound
             self.shared_decoders.color_decoder.bound = self.bound
+            # 如果粗层场景表达是coarse，给乘以一个额外的扩大因子 self.coarse_bound_enlarge，粗粒度解码器需要处理更大范围的场景数据
             if self.coarse:
                 self.shared_decoders.coarse_decoder.bound = self.bound*self.coarse_bound_enlarge
 
-    # 加载预先训练的ConvOnet参数
+    # 加载预先训练的ConvOnet参数，在__init__里调用
+    # ConvONet论文:https://arxiv.org/pdf/2003.04618.pdf
     def load_pretrain(self, cfg):
         """
         Load parameters of pretrained ConvOnet checkpoints to the decoders.
@@ -195,15 +199,20 @@ class NICE_SLAM():
         """
 
         if self.coarse:
+            # ckpt加载coarse权重(从yaml的pretrained_decoders里)
             ckpt = torch.load(cfg['pretrained_decoders']['coarse'],
                               map_location=cfg['mapping']['device'])
+            # 初始化一个空字典，用于存储调整后的权重
             coarse_dict = {}
+            # 遍历模型权重，只处理解码器的权重，排除编码器的权重
             for key, val in ckpt['model'].items():
                 if ('decoder' in key) and ('encoder' not in key):
                     key = key[8:]
                     coarse_dict[key] = val
+            # 加载权重到解码器
             self.shared_decoders.coarse_decoder.load_state_dict(coarse_dict)
 
+        # ckpt加载middle_fine权重(从yaml的pretrained_decoders里)
         ckpt = torch.load(cfg['pretrained_decoders']['middle_fine'],
                           map_location=cfg['mapping']['device'])
         middle_dict = {}
@@ -219,6 +228,7 @@ class NICE_SLAM():
         self.shared_decoders.middle_decoder.load_state_dict(middle_dict)
         self.shared_decoders.fine_decoder.load_state_dict(fine_dict)
 
+    # 分层特征网格初始化
     def grid_init(self, cfg):
         """
         Initialize the hierarchical feature grids.
@@ -226,6 +236,7 @@ class NICE_SLAM():
         Args:
             cfg (dict): parsed config dict.
         """
+        # 各项grid_len参数设置见yaml里的值
         if self.coarse:
             coarse_grid_len = cfg['grid_len']['coarse']
             self.coarse_grid_len = coarse_grid_len
@@ -237,6 +248,7 @@ class NICE_SLAM():
         self.color_grid_len = color_grid_len
 
         c = {}
+        # 特征向量维度c_dim和场景边界xyz_len
         c_dim = cfg['model']['c_dim']
         xyz_len = self.bound[:, 1]-self.bound[:, 0]
 
@@ -250,9 +262,10 @@ class NICE_SLAM():
             coarse_val_shape[0], coarse_val_shape[2] = coarse_val_shape[2], coarse_val_shape[0]
             self.coarse_val_shape = coarse_val_shape
             val_shape = [1, c_dim, *coarse_val_shape]
+            # 初始化一个具有特定形状和尺寸的零张量，并用标准正态分布填充，mid fine color同理；标准正态分布是深度学习中常见的权重初始化方法，有助于模型的训练和收敛
             coarse_val = torch.zeros(val_shape).normal_(mean=0, std=0.01)
             c[coarse_key] = coarse_val
-
+        
         middle_key = 'grid_middle'
         middle_val_shape = list(map(int, (xyz_len/middle_grid_len).tolist()))
         middle_val_shape[0], middle_val_shape[2] = middle_val_shape[2], middle_val_shape[0]
@@ -266,7 +279,7 @@ class NICE_SLAM():
         fine_val_shape[0], fine_val_shape[2] = fine_val_shape[2], fine_val_shape[0]
         self.fine_val_shape = fine_val_shape
         val_shape = [1, c_dim, *fine_val_shape]
-        fine_val = torch.zeros(val_shape).normal_(mean=0, std=0.0001)
+        fine_val = torch.zeros(val_shape).normal_(mean=0, std=0.0001) # 精细网格使用更小的标准差进行初始化
         c[fine_key] = fine_val
 
         color_key = 'grid_color'
@@ -277,6 +290,8 @@ class NICE_SLAM():
         color_val = torch.zeros(val_shape).normal_(mean=0, std=0.01)
         c[color_key] = color_val
 
+        # 所有初始化的网格（粗糙、中等、精细、颜色）被存储在一个字典 c 中，每个网格对应一个键（例如，'grid_coarse', 'grid_middle' 等）
+        # 这个字典随后被赋值给 self.shared_c，使得这些网格可以在整个类的其他方法中被共享和访问
         self.shared_c = c
 
     def tracking(self, rank):
@@ -322,6 +337,7 @@ class NICE_SLAM():
 
         processes = []
         for rank in range(3):
+            # 当 rank 为 0 时，创建一个tracking进程；为1时，创建一个mapping进程；为2时，进行self.coarse的判断，通过则执行coarse_mapping线程
             if rank == 0:
                 p = mp.Process(target=self.tracking, args=(rank, ))
             elif rank == 1:

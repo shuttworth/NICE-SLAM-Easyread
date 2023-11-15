@@ -31,13 +31,16 @@ def main():
     nice_parser.add_argument('--nice', dest='nice', action='store_true')
     nice_parser.add_argument('--imap', dest='nice', action='store_false')
     parser.set_defaults(nice=True)
+    # parse_args()访问在命令行中传递的所有参数
     args = parser.parse_args()
 
     cfg = config.load_config(
         args.config, 'configs/nice_slam.yaml' if args.nice else 'configs/imap.yaml')
 
+    # 关键处1
     slam = NICE_SLAM(cfg, args)
 
+    # 关键处2
     slam.run()
 
 
