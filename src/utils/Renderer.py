@@ -3,6 +3,7 @@ from src.common import get_rays, raw2outputs_nerf_color, sample_pdf
 
 
 class Renderer(object):
+    # 初始化
     def __init__(self, cfg, args, slam, points_batch_size=500000, ray_batch_size=100000):
         self.ray_batch_size = ray_batch_size
         self.points_batch_size = points_batch_size
@@ -20,6 +21,7 @@ class Renderer(object):
 
         self.H, self.W, self.fx, self.fy, self.cx, self.cy = slam.H, slam.W, slam.fx, slam.fy, slam.cx, slam.cy
 
+    # 评估一组空间点的属性信息，根据输入的信息输出一个多维tensor；函数在render_batch_ray中调用
     def eval_points(self, p, decoders, c=None, stage='color', device='cuda:0'):
         """
         Evaluates the occupancy and/or color value for the points.
@@ -40,17 +42,23 @@ class Renderer(object):
         rets = []
         for pi in p_split:
             # mask for points out of bound
+            # 对于每批点坐标pi，方法首先检查这些点是否在预设的边界bound内
             mask_x = (pi[:, 0] < bound[0][1]) & (pi[:, 0] > bound[0][0])
             mask_y = (pi[:, 1] < bound[1][1]) & (pi[:, 1] > bound[1][0])
             mask_z = (pi[:, 2] < bound[2][1]) & (pi[:, 2] > bound[2][0])
+            # 若点坐标在边界内，它们将被送入解码器decoders进行处理。
             mask = mask_x & mask_y & mask_z
 
             pi = pi.unsqueeze(0)
+            # 如果类实例的nice属性为真，则在调用解码器时会使用特征网格c；否则，不使用特征网格。
             if self.nice:
+                # 和decoders.py里360多行的middle_decoder(p, c_grid) color_decoder(p, c_grid)等调用的传参基本是一致的
+                # 我们可以合理的猜测，ret的值是occupancy的值或者是四通道的（三通道RGB+一通道OCC）
                 ret = decoders(pi, c_grid=c, stage=stage)
             else:
                 ret = decoders(pi, c_grid=None)
             ret = ret.squeeze(0)
+            # 结合这里对一维张量且长度为4的处理
             if len(ret.shape) == 1 and ret.shape[0] == 4:
                 ret = ret.unsqueeze(0)
 
@@ -60,17 +68,24 @@ class Renderer(object):
         ret = torch.cat(rets, dim=0)
         return ret
 
+    # 最重要函数，作用是渲染一批采样光线的颜色、深度和不确定性；此函数也作为外层调用的接口，在Mapper.py Tracker.py Mesher.py中都进行了调用
+    # 方法逻辑：
+    # 1. 根据光线的起点和方向，以及设定的参数，计算出一系列采样点。
+    # 2. 如果存在真实深度图像（gt_depth），则在该深度附近采样更多点（N_surface）以提高渲染精度。
+    # 3. 使用线性插值或透视插值（根据self.lindisp的值）计算采样点的深度值（z_vals）。
+    # 4. 如果设定了扰动（self.perturb），则对采样点进行随机扰动以增加渲染的多样性。
+    # 5. 根据采样点的空间位置（通过光线方程计算得到），生成一个点集（pointsf）。
     def render_batch_ray(self, c, decoders, rays_d, rays_o, device, stage, gt_depth=None):
         """
         Render color, depth and uncertainty of a batch of rays.
 
         Args:
-            c (dict): feature grids.
-            decoders (nn.module): decoders.
-            rays_d (tensor, N*3): rays direction.
-            rays_o (tensor, N*3): rays origin.
-            device (str): device name to compute on.
-            stage (str): query stage.
+            c (dict): feature grids. 特征网格
+            decoders (nn.module): decoders. 解码器
+            rays_d (tensor, N*3): rays direction. 光线方向
+            rays_o (tensor, N*3): rays origin. 光线起点
+            device (str): device name to compute on. 计算设备名称
+            stage (str): query stage. 处于哪个阶段
             gt_depth (tensor, optional): sensor depth image. Defaults to None.
 
         Returns:
@@ -85,16 +100,20 @@ class Renderer(object):
 
         N_rays = rays_o.shape[0]
 
+        # coarse粗渲染阶段用不到深度的真值
         if stage == 'coarse':
             gt_depth = None
         if gt_depth is None:
+            # 无深度的真值，就不需要在表面附近采点 N_surface = 0
             N_surface = 0
             near = 0.01
         else:
+            # 分层采样：N_samples->near->z_vals
             gt_depth = gt_depth.reshape(-1, 1)
             gt_depth_samples = gt_depth.repeat(1, N_samples)
             near = gt_depth_samples*0.01
 
+        # 计算了每个光线与边界相交的最远距离（far_bb）
         with torch.no_grad():
             det_rays_o = rays_o.clone().detach().unsqueeze(-1)  # (N, 3, 1)
             det_rays_d = rays_d.clone().detach().unsqueeze(-1)  # (N, 3, 1)
@@ -109,6 +128,8 @@ class Renderer(object):
             far = torch.clamp(far_bb, 0,  torch.max(gt_depth*1.2))
         else:
             far = far_bb
+        
+        # 表面采样：N_surface > 0 判断通过，开始在表面附近采样
         if N_surface > 0:
             if False:
                 # this naive implementation downgrades performance
@@ -119,6 +140,9 @@ class Renderer(object):
                     (1.-t_vals_surface) + 1.05 * \
                     gt_depth_surface * (t_vals_surface)
             else:
+                # 在渲染过程中对每个像素点进行颜色处理，无论这些像素是否有深度传感器的读数。
+                # 对于有深度信息的像素，采样点集中在实际深度附近；对于没有深度信息的像素，则在一个较大范围内均匀分布采样点
+                
                 # since we want to colorize even on regions with no depth sensor readings,
                 # meaning colorize on interpolated geometry region,
                 # we sample all pixels (not using depth mask) for color loss.
@@ -149,13 +173,17 @@ class Renderer(object):
                 z_vals_surface[~gt_none_zero_mask,
                                :] = z_vals_surface_depth_zero
 
+        # 生成了一个在0到1之间的均匀分布的采样系数（t_vals）
         t_vals = torch.linspace(0., 1., steps=N_samples, device=device)
 
+        # 在nice_slam.yaml里lindisp默认是False，这里是对采样点的深度值z_vals应用不同的线性插值方式
+        # 注意，这里依旧是分层采样，即原论文的Nstrat，z_vals里存储的是沿着每条光线采样的点的深度值
         if not self.lindisp:
             z_vals = near * (1.-t_vals) + far * (t_vals)
         else:
             z_vals = 1./(1./near * (1.-t_vals) + 1./far * (t_vals))
 
+        # 是否有扰动
         if self.perturb > 0.:
             # get intervals between samples
             mids = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
@@ -165,19 +193,25 @@ class Renderer(object):
             t_rand = torch.rand(z_vals.shape).to(device)
             z_vals = lower + (upper - lower) * t_rand
 
+        # 合并额外的表面采样点
         if N_surface > 0:
             z_vals, _ = torch.sort(
                 torch.cat([z_vals, z_vals_surface.double()], -1), -1)
 
+        # NICE_SLAM的点位置公式体现了： P = O + dr
         pts = rays_o[..., None, :] + rays_d[..., None, :] * \
             z_vals[..., :, None]  # [N_rays, N_samples+N_surface, 3]
         pointsf = pts.reshape(-1, 3)
 
+        # 将pointsf送入评估模块
         raw = self.eval_points(pointsf, decoders, c, stage, device)
         raw = raw.reshape(N_rays, N_samples+N_surface, -1)
 
+        # 这个 raw2outputs_nerf_color 函数是将从神经辐射场（NeRF）模型得到的原始预测转换为有用的深度图、深度方差、RGB颜色和权重。
         depth, uncertainty, color, weights = raw2outputs_nerf_color(
             raw, z_vals, rays_d, occupancy=self.occupancy, device=device)
+        
+        # 判断是否需要重要性采样；在nice_slam.yaml里，N_importance=0,在原论文里也只有 Nstrat + Nimp
         if N_importance > 0:
             z_vals_mid = .5 * (z_vals[..., 1:] + z_vals[..., :-1])
             z_samples = sample_pdf(
@@ -197,6 +231,7 @@ class Renderer(object):
 
         return depth, uncertainty, color
 
+    # 仅在可视化中使用
     def render_img(self, c, decoders, c2w, device, stage, gt_depth=None):
         """
         Renders out depth, uncertainty, and color images.
