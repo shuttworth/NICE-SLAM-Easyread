@@ -303,6 +303,9 @@ class NICE_SLAM():
         """
 
         # should wait until the mapping of first frame is finished
+        # 一定要进行了初始化、确定了世界坐标系，才能够进行Tracking；
+        # 而NICE-SLAM这样的NeRF based SLAM初始化的办法就是把第一帧图像拍摄的相机位置作为世界坐标系原点，然后先建图再去跟踪；
+        # 在Tracking中，只优化camera pose，不优化hierarchical scene representation
         while (1):
             if self.mapping_first_frame[0] == 1:
                 break
