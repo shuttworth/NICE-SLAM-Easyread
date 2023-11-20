@@ -1,5 +1,3 @@
-# NICE-SLAM-Easyread
-
 <!-- PROJECT LOGO -->
 
 <p align="center">
@@ -43,6 +41,9 @@ It is the supporting code annotation warehouse of the "NeRF-based SLAM course".
     </li>
   </ol>
 </details>
+
+More supporting videos come from here:
+
 
 <br>
 
