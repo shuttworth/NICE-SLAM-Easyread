@@ -550,9 +550,10 @@ class Mapper(object):
             while True:
                 idx = self.idx[0].clone()
                 if idx == self.n_img-1:
-                    break
+                    break  # 到达最后一帧图像，内层循环将终止
                 if self.sync_method == 'strict':
                     if idx % self.every_frame == 0 and idx != prev_idx:
+                        # 严格同步，仅当 idx 是 self.every_frame 的倍数且不等于前一个索引 prev_idx 时才break跳出循环。
                         break
 
                 elif self.sync_method == 'loose':
