@@ -42,9 +42,12 @@ It is the supporting code annotation warehouse of the "NeRF-based SLAM course".
   </ol>
 </details>
 
+<br>
+
 More supporting videos come from here:
 
-
-<br>
+<p align="left">
+  <img src="media/advertisement.JPG" width="180" alt="Advertisement">
+</p>
 
 Others are the same with NICE-SLAM, please refer to [https://github.com/cvg/nice-slam](https://github.com/cvg/nice-slam) for the Installation\Run\So on.
