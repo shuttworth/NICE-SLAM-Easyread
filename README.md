@@ -14,7 +14,7 @@ It is the supporting code annotation warehouse of the "NeRF-based SLAM course".
 </p>
 
 <p align="center">
-本项目是NICE-SLAM的注释工作，是“基于NeRF的SLAM课程”的配套代码注释仓库
+本项目是NICE-SLAM的注释工作，是“基于NeRF的SLAM：理论与实践”课程的配套代码注释仓库
 </p>
 
 <!-- TABLE OF CONTENTS -->
@@ -47,7 +47,7 @@ It is the supporting code annotation warehouse of the "NeRF-based SLAM course".
 More supporting videos come from here:
 
 <p align="left">
-  <img src="media/advertisement.JPG" width="180" alt="Advertisement">
+  <img src="media/advertisement.JPG" width="260" alt="Advertisement">
 </p>
 
 Others are the same with NICE-SLAM, please refer to [https://github.com/cvg/nice-slam](https://github.com/cvg/nice-slam) for the Installation\Run\So on.
