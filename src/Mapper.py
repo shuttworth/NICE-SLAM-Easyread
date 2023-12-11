@@ -275,7 +275,7 @@ class Mapper(object):
             [1, 4])).type(torch.float32).to(device)
 
         # 以下数百行代码，都是对关键帧的处理，我们需要捋清楚这个函数的脉络
-        # 大致流程：1.选择关键帧 -> 2.选择待优化的Feature grid -> 3.构建optimizer -> 4.循环对位姿和地图优化若干次
+        # 大致流程：1.选择关键帧 -> 2.选择待优化的Feature grid -> 3.构建optimizer -> 4.循环对位姿和地图优化若干次 -> 5 启动BA，将相机位姿更新回keyframe_dict中
         # 让我们下面的代码按照这个流程来展开
 
         # 1. 选择关键帧，对应论文3.4（Keyframe Selection）。可选两种策略，分别是随机选择和根据overlap，最后再加上最近的关键帧和当前帧    
@@ -432,15 +432,14 @@ class Mapper(object):
             from torch.optim.lr_scheduler import StepLR
             scheduler = StepLR(optimizer, step_size=200, gamma=0.8)
 
-        # 4. 在for循环中，对位姿和地图优化若干次，具体流程如下：
+        # 4. 在for循环中，对地图优化若干次，具体流程如下：
         # 4.1 根据mapper的不同设置stage，对于coarse mapper，stage为 'coarse'； 对于fine mapper，先是middle stage，再fine stage，最后color stage
         #     每个stage的iter数量根据middle_iter_ratio和fine_iter_ratio来设置。
-        #     各种stage中各种待优化变量的学习率在configs/nice_slam.yaml中配置。对于相机位姿的优化仅在color stage进行。
+        #     各种stage中各种待优化变量的学习率在configs/nice_slam.yaml中配置
         # 4.2 遍历optimize_frame中的每个关键帧，调用get_samples(...)函数根据相机位姿采样一定数量的ray，加入到list中，总计采样5000条。
         # 4.3 调用renderer.render_batch_ray(...)函数，得到render后的rgb和depth
         # 4.4 render后的rgb和depth和真值计算loss，并backward
         # 4.5 将优化后的grid更新回全局Feature grids中
-        # 4.6 将相机位姿更新回keyframe_dict中
         for joint_iter in range(num_joint_iters):
             if self.nice:
                 if self.frustum_feature_selection:
@@ -583,9 +582,9 @@ class Mapper(object):
                         val[mask] = val_grad.clone().detach()
                         c[key] = val
 
+        # 5 启动BA，将相机位姿更新回keyframe_dict中
         if self.BA:
             # put the updated camera poses back
-            # 4.6 将相机位姿更新回keyframe_dict中
             camera_tensor_id = 0
             for id, frame in enumerate(optimize_frame):
                 if frame != -1:
